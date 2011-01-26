@@ -4,7 +4,7 @@ use strict;
 # This is tztk.pl from Topaz's Minecraft SMP Toolkit!
 # Notes and new versions can be found at http://minecraft.topazstorm.com/
 #
-# Kilo Force modifications found at https://github.com/kiloforce/topaz
+# Modification by Kilo Force can be found at https://github.com/kiloforce/topaz
 #
 # Forum: http://www.minecraftforum.net/viewtopic.php?f=10&t=36523
 
