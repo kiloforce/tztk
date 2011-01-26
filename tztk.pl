@@ -5,6 +5,8 @@ use strict;
 # Notes and new versions can be found at http://minecraft.topazstorm.com/
 #
 # Kilo Force modifications found at https://github.com/kiloforce/topaz
+#
+# Forum: http://www.minecraftforum.net/viewtopic.php?f=10&t=36523
 
 
 use IO::Select;
