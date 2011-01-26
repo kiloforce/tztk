@@ -1,8 +1,11 @@
 #!/usr/bin/perl -w
 use strict;
 
-# This is tztk-server.pl from Topaz's Minecraft SMP Toolkit!
+# This is tztk.pl from Topaz's Minecraft SMP Toolkit!
 # Notes and new versions can be found at http://minecraft.topazstorm.com/
+#
+# Kilo Force modifications found at https://github.com/kiloforce/topaz
+
 
 use IO::Select;
 use IPC::Open2;
@@ -11,9 +14,11 @@ use IO::Socket;
 use File::Copy;
 use POSIX qw(strftime);
 
+
 my $protocol_version = 8;
 my $client_version = 99;
 my $server_memory = "1024M";
+
 
 # client init
 my %packet; %packet = (
@@ -56,10 +61,28 @@ my %packet; %packet = (
 );
 
 
-my $cmddir = "tztk-allowed-commands";
-my $snapshotdir = "tztk-snapshots";
+my $cmddir = "tztk/commands";
+my $snapshotdir = "tztk/snapshots";
 my %msgcolor = (info => 36, warning => 33, error => 31, tztk => 32);
 $|=1;
+
+
+# create default server.properties if not exist
+if ( ! -e "server.properties" ) {
+  #
+  open SERVERPROPERTIES, ">", "server.properties" or die "failed to write new server.properties";
+  print SERVERPROPERTIES "#Minecraft server properties - tztk default\n";
+  print SERVERPROPERTIES "level-name=world\n";
+  print SERVERPROPERTIES "hellworld=false\n";
+  print SERVERPROPERTIES "spawn-monsters=true\n";
+  print SERVERPROPERTIES "online-mode=true\n";
+  print SERVERPROPERTIES "spawn-animals=true\n";
+  print SERVERPROPERTIES "max-players=20\n";
+  print SERVERPROPERTIES "server-ip=\n";
+  print SERVERPROPERTIES "pvp=true\n";
+  print SERVERPROPERTIES "server-port=25565\n";
+  close SERVERPROPERTIES;
+}
 
 # load server properties
 my %server_properties;
@@ -78,13 +101,13 @@ print color(tztk => "Minecraft server appears to be at $server_properties{server
 
 # load waypoint authentication
 my %wpauth;
-if (-d "tztk-waypoint-auth") {
-  $wpauth{username} = cat('tztk-waypoint-auth/username');
-  $wpauth{password} = cat('tztk-waypoint-auth/password');
+if (-d "tztk/waypoint-auth") {
+  $wpauth{username} = cat('tztk/waypoint-auth/username');
+  $wpauth{password} = cat('tztk/waypoint-auth/password');
   my $sessiondata = mcauth_startsession($wpauth{username}, $wpauth{password});
 
   if (!ref $sessiondata) {
-    print color(tztk => "Failed to authenticate with tztk-waypoint-auth user $wpauth{username}: $sessiondata\n");
+    print color(tztk => "Failed to authenticate with waypoint-auth user $wpauth{username}: $sessiondata\n");
     %wpauth = ();
   } else {
     $wpauth{username} = $sessiondata->{username};
@@ -94,12 +117,12 @@ if (-d "tztk-waypoint-auth") {
 
 # connect to irc
 my $irc;
-if (-d "tztk-irc") {
+if (-d "tztk/irc") {
   $irc = irc_connect({
-    host    => cat("tztk-irc/host")    || "localhost",
-    port    => cat("tztk-irc/port")    || 6667,
-    nick    => cat("tztk-irc/nick")    || "minecraft",
-    channel => cat("tztk-irc/channel") || "#minecraft",
+    host    => cat("tztk/irc/host")    || "localhost",
+    port    => cat("tztk/irc/port")    || 6667,
+    nick    => cat("tztk/irc/nick")    || "minecraft",
+    channel => cat("tztk/irc/channel") || "#minecraft",
   });
 }
 
@@ -170,13 +193,13 @@ while (kill 0 => $server_pid) {
 
         if ($ip ne '127.0.0.1') {
           my ($whitelist_active, $whitelist_passed) = (0,0);
-          if (-d "tztk-whitelisted-ips") {
+          if (-d "tztk/whitelisted-ips") {
             $whitelist_active = 1;
-            $whitelist_passed = 1 if -e "tztk-whitelisted-ips/$ip";
+            $whitelist_passed = 1 if -e "tztk/whitelisted-ips/$ip";
           }
-          if (-d "tztk-whitelisted-players") {
+          if (-d "tztk/whitelisted-players") {
             $whitelist_active = 1;
-            $whitelist_passed = 1 if -e "tztk-whitelisted-players/$username";
+            $whitelist_passed = 1 if -e "tztk/whitelisted-players/$username";
           }
           if ($whitelist_active && !$whitelist_passed) {
             console_exec(kick => $username);
@@ -187,7 +210,7 @@ while (kill 0 => $server_pid) {
 
         irc_send($irc, "$username has connected") if $irc && player_is_human($username);
 
-        if (player_is_human($username) && -e "tztk-motd" && open(MOTD, "tztk-motd")) {
+        if (player_is_human($username) && -e "tztk/motd" && open(MOTD, "tztk/motd")) {
           console_exec(tell => $username => "Message of the day:");
           while (<MOTD>) {
             chomp;
@@ -215,7 +238,7 @@ while (kill 0 => $server_pid) {
           console_exec(tell => $want_list => "Connected players: " . join(', ', @players));
           $want_list = undef;
         }
-        open(PLAYERS, ">tztk-players.txt");
+        open(PLAYERS, ">tztk/players.txt");
         print PLAYERS map{"$_\n"} @players;
         close PLAYERS;
       # snapshot save-complete trigger
@@ -313,7 +336,7 @@ while (kill 0 => $server_pid) {
 
   # snapshots
   my $snapshot_period;
-  if ($snapshot_period = cat("tztk-snapshot-period")) {
+  if ($snapshot_period = cat("tztk/snapshot-period")) {
     if ($snapshot_period =~ /^\d+$/) {
       mkdir $snapshotdir unless -d $snapshotdir;
       if (!-e "$snapshotdir/latest" || time - (stat("$snapshotdir/latest"))[9] >= $snapshot_period) {
@@ -360,7 +383,7 @@ sub snapshot_finish {
   symlink("$snapshot_name", "$snapshotdir/latest");
 
   my $snapshot_max;
-  if ($snapshot_max = cat("tztk-snapshot-max")) {
+  if ($snapshot_max = cat("tztk/snapshot-max")) {
     if ($snapshot_max =~ /^\d+$/ && $snapshot_max >= 1) {
       opendir(SNAPSHOTS, $snapshotdir);
       my @snapshots = sort grep {/^snapshot\-[\d\-]+\.tgz$/} readdir(SNAPSHOTS);
@@ -374,7 +397,7 @@ sub snapshot_finish {
 
 sub player_create {
   my $username = lc $_[0];
-  return "can't create fake player, server must set online-mode=false or provide a real user in tztk-waypoint-auth" unless %wpauth || $server_properties{online_mode} eq 'false';
+  return "can't create fake player, server must set online-mode=false or provide a real user in tztk/waypoint-auth" unless %wpauth || $server_properties{online_mode} eq 'false';
   return "invalid name" unless $username =~ /^[\w\-]+$/;
 
   my $player = IO::Socket::INET->new(
@@ -445,7 +468,7 @@ sub mcauth_joinserver {
   return http('www.minecraft.net', '/game/joinserver.jsp?user='.urlenc($_[0]).'&sessionId='.urlenc($_[1]).'&serverId='.urlenc($_[2]));
 }
 
-sub command_allowed { -e "tztk-allowed-commands/$_[0]" }
+sub command_allowed { -e "tztk/commands/$_[0]" }
 
 sub console_exec {
   print MCIN join(" ", @_) . "\n";
