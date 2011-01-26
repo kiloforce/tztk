@@ -1,0 +1,9 @@
+* create default server.properties if not found
+* fix irc caused error
+* add -help command
+* add -spawn wp command
+* add -home and -sethome commands (personal waypoints)
+* move topaz files into tztk folder
+* add -last command (show players last login and time played)
+* add -uptime command
+* add -tp-on -tp-off commands (to allow/disallow others to tp to you)
