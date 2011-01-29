@@ -233,23 +233,46 @@ while (kill 0 => $server_pid) {
 
       #($cmd_user, $cmd_name, $cmd_args) = ($1, $3, $2) if command_allowed($3);
       if (defined $cmd_name && command_allowed($cmd_name)) {
-        if ($cmd_name eq 'create' && $cmd_args =~ /^(\d+)(?:\s*[x\*]\s*(\d+))?$/) {
-          my ($id, $count) = ($1, $2||1);
-          if (-d "$cmddir/create") {
-            if (-d "$cmddir/create/whitelist" && !-e "$cmddir/create/whitelist/$id") {
-              console_exec(tell => $cmd_user => "That material is not in the active creation whitelist.");
-              next;
-            }  elsif (-e "$cmddir/create/blacklist/$id") {
-              console_exec(tell => $cmd_user => "That material is in the creation blacklist.");
+        if ($cmd_name eq 'create' && $cmd_args =~ /^(\d+)(?:\s*\D+?\s*(\d+))?|([a-z][\w\-]*)$/) {
+          my ($id, $count, $kit) = ($1, $2||1, lc $3);
+          my @create;
+          if ($kit) {
+            if (!-e "$cmddir/create/kits/$kit") {
+              console_exec(tell => $cmd_user => "That is not a known kit.");
               next;
             }
+            open(KIT, "$cmddir/create/kits/$kit");
+            while (<KIT>) {
+              next unless /^\s*(\d+)(?:\s*\D+?\s*(\d+))?\s*$/;
+              push @create, [$1, $2||1];
+            }
+
+            if (!@create) {
+              console_exec(tell => $cmd_user => "Nothing to create!  Is the kit defined correctly?");
+              next
+            }
+          } else {
+            @create = ([$id, $count]);
           }
-          my $maxcreate = -e "$cmddir/create/max" ? cat("$cmddir/create/max") : 64;
-          $count = $maxcreate if $count > $maxcreate;
-          while ($count > 0) {
-            my $amount = $count > 64 ? 64 : $count;
-            $count -= $amount;
-            console_exec(give => $cmd_user, $id, $amount);
+
+          foreach my $create (@create) {
+            my ($id, $count) = @$create;
+            if (-d "$cmddir/create") {
+              if (-d "$cmddir/create/whitelist" && !-e "$cmddir/create/whitelist/$id") {
+                console_exec(tell => $cmd_user => "Material $id is not in the active creation whitelist.");
+                next;
+              }  elsif (-e "$cmddir/create/blacklist/$id") {
+                console_exec(tell => $cmd_user => "Material $id is in the creation blacklist.");
+                next;
+              }
+            }
+            my $maxcreate = -e "$cmddir/create/max" ? cat("$cmddir/create/max") : 64;
+            $count = $maxcreate if $count > $maxcreate;
+            while ($count > 0) {
+              my $amount = $count > 64 ? 64 : $count;
+              $count -= $amount;
+              console_exec(give => $cmd_user, $id, $amount);
+            }
           }
         } elsif ($cmd_name eq 'tp' && $cmd_args =~ /^([\w\-]+)$/) {
           my ($dest) = ($1);
