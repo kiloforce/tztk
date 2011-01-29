@@ -56,9 +56,10 @@ my %packet; %packet = (
 );
 
 
-my $cmddir = "tztk-allowed-commands";
-my $snapshotdir = "tztk-snapshots";
-my %msgcolor = (info => 36, warning => 33, error => 31, tztk => 32);
+my $tztk_dir = cat("tztk-dir") || "tztk";
+my $cmddir = "$tztk_dir/allowed-commands";
+my $snapshotdir = "$tztk_dir/snapshots";
+my %msgcolor = (info => 36, warning => 33, error => 31, tztk => 32, chat => 35);
 $|=1;
 
 # load server properties
@@ -78,13 +79,13 @@ print color(tztk => "Minecraft server appears to be at $server_properties{server
 
 # load waypoint authentication
 my %wpauth;
-if (-d "tztk-waypoint-auth") {
-  $wpauth{username} = cat('tztk-waypoint-auth/username');
-  $wpauth{password} = cat('tztk-waypoint-auth/password');
+if (-d "$tztk_dir/waypoint-auth") {
+  $wpauth{username} = cat('$tztk_dir/waypoint-auth/username');
+  $wpauth{password} = cat('$tztk_dir/waypoint-auth/password');
   my $sessiondata = mcauth_startsession($wpauth{username}, $wpauth{password});
 
   if (!ref $sessiondata) {
-    print color(tztk => "Failed to authenticate with tztk-waypoint-auth user $wpauth{username}: $sessiondata\n");
+    print color(tztk => "Failed to authenticate with waypoint-auth user $wpauth{username}: $sessiondata\n");
     %wpauth = ();
   } else {
     $wpauth{username} = $sessiondata->{username};
@@ -94,12 +95,12 @@ if (-d "tztk-waypoint-auth") {
 
 # connect to irc
 my $irc;
-if (-d "tztk-irc") {
+if (-d "$tztk_dir/irc") {
   $irc = irc_connect({
-    host    => cat("tztk-irc/host")    || "localhost",
-    port    => cat("tztk-irc/port")    || 6667,
-    nick    => cat("tztk-irc/nick")    || "minecraft",
-    channel => cat("tztk-irc/channel") || "#minecraft",
+    host    => cat("$tztk_dir/irc/host")    || "localhost",
+    port    => cat("$tztk_dir/irc/port")    || 6667,
+    nick    => cat("$tztk_dir/irc/nick")    || "minecraft",
+    channel => cat("$tztk_dir/irc/channel") || "#minecraft",
   });
 }
 
@@ -133,7 +134,7 @@ while (kill 0 => $server_pid) {
       }
     } elsif ($fh == \*MCOUT) {
       if (eof(MCOUT)) {
-        print "MCOUT seems to be EOF.  Is the server dead?  Exiting...\n";
+        print "Minecraft server seems to have shut down.  Exiting...\n";
         exit;
       }
       my $mc = <MCOUT>;
@@ -142,6 +143,7 @@ while (kill 0 => $server_pid) {
       ($msgprefix, $msgtype) = ($1, lc $2) if $mc =~ s/^([\d\-\s\:]*\[(\w+)\]\s*)//;
       $msgprefix = strftime('%F %T [MISC] ', localtime) unless length $msgprefix;
       $mc =~ s/\xc2\xa7[0-9a-f]//g; #remove color codes
+      $msgtype = 'chat' if $msgtype eq 'info' && $mc =~ /^\<[\w\-]+\>\s+[^\-]/;
       print color($msgtype => $msgprefix.$mc);
 
       my ($cmd_user, $cmd_name, $cmd_args);
@@ -172,13 +174,13 @@ while (kill 0 => $server_pid) {
 
         if ($ip ne '127.0.0.1') {
           my ($whitelist_active, $whitelist_passed) = (0,0);
-          if (-d "tztk-whitelisted-ips") {
+          if (-d "$tztk_dir/whitelisted-ips") {
             $whitelist_active = 1;
-            $whitelist_passed = 1 if -e "tztk-whitelisted-ips/$ip";
+            $whitelist_passed = 1 if -e "$tztk_dir/whitelisted-ips/$ip";
           }
-          if (-d "tztk-whitelisted-players") {
+          if (-d "$tztk_dir/whitelisted-players") {
             $whitelist_active = 1;
-            $whitelist_passed = 1 if -e "tztk-whitelisted-players/$username";
+            $whitelist_passed = 1 if -e "$tztk_dir/whitelisted-players/$username";
           }
           if ($whitelist_active && !$whitelist_passed) {
             console_exec(kick => $username);
@@ -189,7 +191,7 @@ while (kill 0 => $server_pid) {
 
         irc_send($irc, "$username has connected") if $irc && player_is_human($username);
 
-        if (player_is_human($username) && -e "tztk-motd" && open(MOTD, "tztk-motd")) {
+        if (player_is_human($username) && -e "$tztk_dir/motd" && open(MOTD, "$tztk_dir/motd")) {
           console_exec(tell => $username => "Message of the day:");
           while (<MOTD>) {
             chomp;
@@ -217,7 +219,7 @@ while (kill 0 => $server_pid) {
           console_exec(tell => $want_list => "Connected players: " . join(', ', @players));
           $want_list = undef;
         }
-        open(PLAYERS, ">tztk-players.txt");
+        open(PLAYERS, ">$tztk_dir/players.txt");
         print PLAYERS map{"$_\n"} @players;
         close PLAYERS;
       # snapshot save-complete trigger
@@ -315,7 +317,7 @@ while (kill 0 => $server_pid) {
 
   # snapshots
   my $snapshot_period;
-  if ($snapshot_period = cat("tztk-snapshot-period")) {
+  if ($snapshot_period = cat("$tztk_dir/snapshot-period")) {
     if ($snapshot_period =~ /^\d+$/) {
       mkdir $snapshotdir unless -d $snapshotdir;
       if (!-e "$snapshotdir/latest" || time - (stat("$snapshotdir/latest"))[9] >= $snapshot_period) {
@@ -362,7 +364,7 @@ sub snapshot_finish {
   symlink("$snapshot_name", "$snapshotdir/latest");
 
   my $snapshot_max;
-  if ($snapshot_max = cat("tztk-snapshot-max")) {
+  if ($snapshot_max = cat("$tztk_dir/snapshot-max")) {
     if ($snapshot_max =~ /^\d+$/ && $snapshot_max >= 1) {
       opendir(SNAPSHOTS, $snapshotdir);
       my @snapshots = sort grep {/^snapshot\-[\d\-]+\.tgz$/} readdir(SNAPSHOTS);
@@ -376,7 +378,7 @@ sub snapshot_finish {
 
 sub player_create {
   my $username = lc $_[0];
-  return "can't create fake player, server must set online-mode=false or provide a real user in tztk-waypoint-auth" unless %wpauth || $server_properties{online_mode} eq 'false';
+  return "can't create fake player, server must set online-mode=false or provide a real user in $tztk_dir/waypoint-auth" unless %wpauth || $server_properties{online_mode} eq 'false';
   return "invalid name" unless $username =~ /^[\w\-]+$/;
 
   my $player = IO::Socket::INET->new(
@@ -447,7 +449,7 @@ sub mcauth_joinserver {
   return http('www.minecraft.net', '/game/joinserver.jsp?user='.urlenc($_[0]).'&sessionId='.urlenc($_[1]).'&serverId='.urlenc($_[2]));
 }
 
-sub command_allowed { -e "tztk-allowed-commands/$_[0]" }
+sub command_allowed { -e "$tztk_dir/allowed-commands/$_[0]" }
 
 sub console_exec {
   print MCIN join(" ", @_) . "\n";
