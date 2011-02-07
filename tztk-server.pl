@@ -106,7 +106,7 @@ if (-d "$tztk_dir/irc") {
 
 # start minecraft server
 my $server_pid = 0;
-$SIG{PIPE} = sub { print color(errror => "SIGPIPE (\$?=$?, k0=".(kill 0 => $server_pid).", \$!=$!)\n"); };
+$SIG{PIPE} = sub { print color(error => "SIGPIPE (\$?=$?, k0=".(kill 0 => $server_pid).", \$!=$!)\n"); };
 $server_pid = open2(\*MCOUT, \*MCIN, "java -Xmx$server_memory -Xms$server_memory -jar minecraft_server.jar nogui 2>&1");
 print "Minecraft SMP Server launched with pid $server_pid\n";
 
