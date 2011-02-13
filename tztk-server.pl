@@ -594,8 +594,20 @@ sub http {
   return join("\n", <$http>);
 }
 
+
 sub show_uptime {
   console_exec( say => ":: Uptime: " . short_time( time() - $uptime ) );
+}
+
+sub short_time {
+  my ( $sec ) = @_;
+  if ( $sec >= 172800 ) { # >= 2 days or 48 hours
+    return int( $sec / 60 / 60 / 24 ) . " days";
+  } elsif ( $sec >= 3600 and $sec < 172800) { # >= 1 hour
+    return int( $sec / 60 / 60 ) . " hour(s)";
+  } else {
+    return int( $sec / 60 ) . " minutes";
+  }
 }
 
 sub show_help {
