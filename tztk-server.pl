@@ -62,6 +62,30 @@ my $snapshotdir = "$tztk_dir/snapshots";
 my %msgcolor = (info => 36, warning => 33, error => 31, tztk => 32, chat => 35);
 $|=1;
 
+# server uptime
+my $uptime = time();
+# write uptime to file (for future use)
+open UPTIME, ">", "$tztk_dir/uptime" or die "ERROR: unable to write uptime to file";
+print UPTIME $uptime;
+close UPTIME;
+
+# create default server.properties if not exist
+if ( ! -e "server.properties" ) {
+  #
+  open SERVERPROPERTIES, ">", "server.properties" or die "failed to write new server.properties";
+  print SERVERPROPERTIES "#Minecraft server properties - tztk default\n";
+  print SERVERPROPERTIES "level-name=world\n";
+  print SERVERPROPERTIES "hellworld=false\n";
+  print SERVERPROPERTIES "spawn-monsters=true\n";
+  print SERVERPROPERTIES "online-mode=false\n";
+  print SERVERPROPERTIES "spawn-animals=true\n";
+  print SERVERPROPERTIES "max-players=20\n";
+  print SERVERPROPERTIES "server-ip=\n";
+  print SERVERPROPERTIES "pvp=false\n";
+  print SERVERPROPERTIES "server-port=25565\n";
+  close SERVERPROPERTIES;
+}
+
 # load server properties
 my %server_properties;
 open(SERVERPROPERTIES, "server.properties") or die "failed to load server properties: $!";
@@ -129,6 +153,8 @@ while (kill 0 => $server_pid) {
       }
       if ($stdin =~ /^\-snapshot\s*$/) {
         snapshot_begin();
+      } elsif ( $stdin =~ /^\-wp\s*(\w+)\s*(\w+)\s*$/ ) {
+        do_wp( $1, $2 );
       } else {
         print MCIN $stdin;
       }
@@ -278,47 +304,9 @@ while (kill 0 => $server_pid) {
           my ($dest) = ($1);
           console_exec(tp => $cmd_user, $dest);
         } elsif ($cmd_name eq 'wp' && $cmd_args =~ /^([\w\-]+)$/) {
-          my $waypoint = "wp-" . lc($1);
-          if (!-e "$server_properties{level_name}/players/$waypoint.dat") {
-            console_exec(tell => $cmd_user => "That waypoint does not exist!");
-            next;
-          }
-          my $wp_user = $waypoint;
-          if (%wpauth) {
-            if (player_copy($waypoint, $wpauth{username})) {
-              $wp_user = $wpauth{username};
-            } else {
-              console_exec(tell => $cmd_user => "Failed to adjust player data for authenticated user; check permissions of world files");
-              next;
-            }
-          }
-          my $wp_player = player_create($wp_user);
-          if (!ref $wp_player) {
-            console_exec(tell => $cmd_user => $wp_player);
-            next;
-          }
-          console_exec(tp => $cmd_user, $wp_user);
-          player_destroy($wp_player);
-          player_copy($wpauth{username}, $waypoint) if %wpauth;
+          do_wp( $cmd_user, $1 );
         } elsif ($cmd_name eq 'wp-set' && $cmd_args =~ /^([\w\-]+)$/) {
-          my $waypoint = "wp-" . lc($1);
-          my $wp_user = $waypoint;
-          if (%wpauth) {
-            if (!-e "$server_properties{level_name}/players/$waypoint.dat" || player_copy($waypoint, $wpauth{username})) {
-              $wp_user = $wpauth{username};
-            } else {
-              console_exec(tell => $cmd_user => "Failed to adjust player data for authenticated user; check permissions of world files");
-              next;
-            }
-          }
-          my $wp_player = player_create($wp_user);
-          if (!ref $wp_player) {
-            console_exec(tell => $cmd_user => $wp_player);
-            next;
-          }
-          console_exec(tp => $wp_user, $cmd_user);
-          player_destroy($wp_player);
-          player_copy($wpauth{username}, $waypoint) if %wpauth;
+          do_wpset( $cmd_user, $1 );
         } elsif ($cmd_name eq 'wp-list') {
           opendir(PLAYERS, "$server_properties{level_name}/players/");
           console_exec(tell => $cmd_user => join(", ", sort map {/^wp\-([\w\-]+)\.dat$/ ? $1 : ()} readdir(PLAYERS)));
@@ -326,6 +314,18 @@ while (kill 0 => $server_pid) {
         } elsif ($cmd_name eq 'list') {
           console_exec('list');
           $want_list = $cmd_user;
+        } elsif ($cmd_name eq 'uptime') {
+          show_uptime();
+        } elsif ($cmd_name eq 'help') {
+          show_help();
+        } elsif ($cmd_name eq 'home') {
+          do_wp( $cmd_user, $cmd_user );
+        } elsif ($cmd_name eq 'sethome') {
+          do_wpset( $cmd_user, $cmd_user );
+        } elsif ($cmd_name eq 'spawn') {
+          do_wp( $cmd_user, 'spawn' );
+        } elsif ($cmd_name eq 'setspawn') {
+          do_wpset( $cmd_user, 'spawn' );
         }
       }
     } elsif ($irc && $fh == $irc->{socket}) {
@@ -593,3 +593,74 @@ sub http {
   while (<$http> =~ /\S/) {}
   return join("\n", <$http>);
 }
+
+sub show_uptime {
+  console_exec( say => ":: Uptime: " . short_time( time() - $uptime ) );
+}
+
+sub show_help {
+  console_exec( say => ":: HELP:" );
+  console_exec( say => ": -help -- This help message" );
+  console_exec( say => ": -list -- List online users" ) if command_allowed('list');
+  console_exec( say => ": -last -- List users last login time and hours played" ) if command_allowed('last');
+  console_exec( say => ": -tp [user] -- Teleport to user" ) if command_allowed('tp');
+  console_exec( say => ": -tp-on -- Allow users to teleport to you" ) if command_allowed('tp-on');
+  console_exec( say => ": -tp-off -- Disallow users to teleport to you" ) if command_allowed('tp-off');
+  console_exec( say => ": -spawn -- Warp to spawn point" ) if command_allowed('spawn');
+  console_exec( say => ": -home -- Warp to user's 'sethome' location" ) if command_allowed('home');
+  console_exec( say => ": -sethome -- Set current location as user's home" ) if command_allowed('sethome');
+  console_exec( say => ": -wp-list -- List way points" ) if command_allowed('wp-list');
+  console_exec( say => ": -wp-set [wp] -- Set current location as a waypoint" ) if command_allowed('wp-set');
+  console_exec( say => ": -wp [wp] -- Jump to way point" ) if command_allowed('wp');
+}
+
+sub do_wp {
+  my ( $username, $wayname ) = @_;
+  my $waypoint = "wp-" . lc( $wayname );
+  if (!-e "$server_properties{level_name}/players/$waypoint.dat") {
+    console_exec(tell => $username => "That waypoint does not exist!");
+    return;
+  }
+  my $wp_user = $waypoint;
+  if (%wpauth) {
+    if (player_copy($waypoint, $wpauth{username})) {
+      $wp_user = $wpauth{username};
+    } else {
+      console_exec(tell => $username => "Failed to adjust player data for authenticated user; check permissions of world files");
+      return;
+    }
+  }
+  my $wp_player = player_create($wp_user);
+  if (!ref $wp_player) {
+    console_exec(tell => $username => $wp_player);
+    return;
+  }
+  console_exec(tp => $username, $wp_user);
+  player_destroy($wp_player);
+  player_copy($wpauth{username}, $waypoint) if %wpauth;
+}
+
+
+sub do_wpset {
+  my ( $username, $wayname ) = @_;
+  my $waypoint = "wp-" . lc( $wayname );
+  my $wp_user = $waypoint;
+  if (%wpauth) {
+    if (!-e "$server_properties{level_name}/players/$waypoint.dat" || player_copy($waypoint, $wpauth{username})) {
+      $wp_user = $wpauth{username};
+    } else {
+      console_exec(tell => $username => "Failed to adjust player data for authenticated user; check permissions of world files");
+      return;
+    }
+  }
+  my $wp_player = player_create($wp_user);
+  if (!ref $wp_player) {
+    console_exec(tell => $username => $wp_player);
+    return;
+  }
+  console_exec(tp => $wp_user, $username);
+  player_destroy($wp_player);
+  player_copy($wpauth{username}, $waypoint) if %wpauth;
+}
+
+
