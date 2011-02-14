@@ -1,13 +1,8 @@
 #!/usr/bin/perl -w
 use strict;
 
-# This is tztk.pl from Topaz's Minecraft SMP Toolkit!
+# This is tztk-server.pl from Topaz's Minecraft SMP Toolkit!
 # Notes and new versions can be found at http://minecraft.topazstorm.com/
-#
-# Modification by Kilo Force can be found at https://github.com/kiloforce/topaz
-#
-# Forum: http://www.minecraftforum.net/viewtopic.php?f=10&t=36523
-
 
 use IO::Select;
 use IPC::Open2;
@@ -16,11 +11,9 @@ use IO::Socket;
 use File::Copy;
 use POSIX qw(strftime);
 
-
 my $protocol_version = 8;
 my $client_version = 99;
 my $server_memory = "1024M";
-
 
 # client init
 my %packet; %packet = (
@@ -63,18 +56,18 @@ my %packet; %packet = (
 );
 
 
-my $cmddir = "tztk/commands";
-my $snapshotdir = "tztk/snapshots";
-my %msgcolor = (info => 36, warning => 33, error => 31, tztk => 32, player => 35);
+my $tztk_dir = cat("tztk-dir") || "tztk";
+my $cmddir = "$tztk_dir/allowed-commands";
+my $snapshotdir = "$tztk_dir/snapshots";
+my %msgcolor = (info => 36, warning => 33, error => 31, tztk => 32, chat => 35);
 $|=1;
 
-
-# write uptime to file (for future use)
-open UPTIME, ">", "tztk/uptime" or die "ERROR: unable to write uptime to file";
-print UPTIME time();
-close UPTIME;
+# server uptime
 my $uptime = time();
-
+# write uptime to file (for future use)
+open UPTIME, ">", "$tztk_dir/uptime" or die "ERROR: unable to write uptime to file";
+print UPTIME $uptime;
+close UPTIME;
 
 # create default server.properties if not exist
 if ( ! -e "server.properties" ) {
@@ -84,11 +77,11 @@ if ( ! -e "server.properties" ) {
   print SERVERPROPERTIES "level-name=world\n";
   print SERVERPROPERTIES "hellworld=false\n";
   print SERVERPROPERTIES "spawn-monsters=true\n";
-  print SERVERPROPERTIES "online-mode=true\n";
+  print SERVERPROPERTIES "online-mode=false\n";
   print SERVERPROPERTIES "spawn-animals=true\n";
   print SERVERPROPERTIES "max-players=20\n";
   print SERVERPROPERTIES "server-ip=\n";
-  print SERVERPROPERTIES "pvp=true\n";
+  print SERVERPROPERTIES "pvp=false\n";
   print SERVERPROPERTIES "server-port=25565\n";
   close SERVERPROPERTIES;
 }
@@ -110,9 +103,9 @@ print color(tztk => "Minecraft server appears to be at $server_properties{server
 
 # load waypoint authentication
 my %wpauth;
-if (-d "tztk/waypoint-auth") {
-  $wpauth{username} = cat('tztk/waypoint-auth/username');
-  $wpauth{password} = cat('tztk/waypoint-auth/password');
+if (-d "$tztk_dir/waypoint-auth") {
+  $wpauth{username} = cat('$tztk_dir/waypoint-auth/username');
+  $wpauth{password} = cat('$tztk_dir/waypoint-auth/password');
   my $sessiondata = mcauth_startsession($wpauth{username}, $wpauth{password});
 
   if (!ref $sessiondata) {
@@ -126,18 +119,18 @@ if (-d "tztk/waypoint-auth") {
 
 # connect to irc
 my $irc;
-if (-d "tztk/irc") {
+if (-d "$tztk_dir/irc") {
   $irc = irc_connect({
-    host    => cat("tztk/irc/host")    || "localhost",
-    port    => cat("tztk/irc/port")    || 6667,
-    nick    => cat("tztk/irc/nick")    || "minecraft",
-    channel => cat("tztk/irc/channel") || "#minecraft",
+    host    => cat("$tztk_dir/irc/host")    || "localhost",
+    port    => cat("$tztk_dir/irc/port")    || 6667,
+    nick    => cat("$tztk_dir/irc/nick")    || "minecraft",
+    channel => cat("$tztk_dir/irc/channel") || "#minecraft",
   });
 }
 
 # start minecraft server
 my $server_pid = 0;
-$SIG{PIPE} = sub { print color(errror => "SIGPIPE (\$?=$?, k0=".(kill 0 => $server_pid).", \$!=$!)\n"); };
+$SIG{PIPE} = sub { print color(error => "SIGPIPE (\$?=$?, k0=".(kill 0 => $server_pid).", \$!=$!)\n"); };
 $server_pid = open2(\*MCOUT, \*MCIN, "java -Xmx$server_memory -Xms$server_memory -jar minecraft_server.jar nogui 2>&1");
 print "Minecraft SMP Server launched with pid $server_pid\n";
 
@@ -148,6 +141,7 @@ my $want_snapshot = 0;
 
 my $sel = new IO::Select(\*MCOUT, \*STDIN);
 $sel->add($irc->{socket}) if $irc;
+
 while (kill 0 => $server_pid) {
   foreach my $fh ($sel->can_read(60)) {
     if ($fh == \*STDIN) {
@@ -159,12 +153,14 @@ while (kill 0 => $server_pid) {
       }
       if ($stdin =~ /^\-snapshot\s*$/) {
         snapshot_begin();
+      } elsif ( $stdin =~ /^\-wp\s*(\w+)\s*(\w+)\s*$/ ) {
+        do_wp( $1, $2 );
       } else {
         print MCIN $stdin;
       }
     } elsif ($fh == \*MCOUT) {
       if (eof(MCOUT)) {
-        print "Exiting Server...\n";
+        print "Minecraft server seems to have shut down.  Exiting...\n";
         exit;
       }
       my $mc = <MCOUT>;
@@ -173,11 +169,8 @@ while (kill 0 => $server_pid) {
       ($msgprefix, $msgtype) = ($1, lc $2) if $mc =~ s/^([\d\-\s\:]*\[(\w+)\]\s*)//;
       $msgprefix = strftime('%F %T [MISC] ', localtime) unless length $msgprefix;
       $mc =~ s/\xc2\xa7[0-9a-f]//g; #remove color codes
-      if( $msgtype eq 'info' and $mc =~ /<\w+> [^-]/ ) {
-        print color(player => $msgprefix.$mc);  # highlight player conversation
-      } else {
-        print color($msgtype => $msgprefix.$mc);
-      }
+      $msgtype = 'chat' if $msgtype eq 'info' && $mc =~ /^\<[\w\-]+\>\s+[^\-]/;
+      print color($msgtype => $msgprefix.$mc);
 
       my ($cmd_user, $cmd_name, $cmd_args);
 
@@ -207,13 +200,13 @@ while (kill 0 => $server_pid) {
 
         if ($ip ne '127.0.0.1') {
           my ($whitelist_active, $whitelist_passed) = (0,0);
-          if (-d "tztk/whitelisted-ips") {
+          if (-d "$tztk_dir/whitelisted-ips") {
             $whitelist_active = 1;
-            $whitelist_passed = 1 if -e "tztk/whitelisted-ips/$ip";
+            $whitelist_passed = 1 if -e "$tztk_dir/whitelisted-ips/$ip";
           }
-          if (-d "tztk/whitelisted-players") {
+          if (-d "$tztk_dir/whitelisted-players") {
             $whitelist_active = 1;
-            $whitelist_passed = 1 if -e "tztk/whitelisted-players/$username";
+            $whitelist_passed = 1 if -e "$tztk_dir/whitelisted-players/$username";
           }
           if ($whitelist_active && !$whitelist_passed) {
             console_exec(kick => $username);
@@ -224,7 +217,7 @@ while (kill 0 => $server_pid) {
 
         irc_send($irc, "$username has connected") if $irc && player_is_human($username);
 
-        if (player_is_human($username) && -e "tztk/motd" && open(MOTD, "tztk/motd")) {
+        if (player_is_human($username) && -e "$tztk_dir/motd" && open(MOTD, "$tztk_dir/motd")) {
           console_exec(tell => $username => "Message of the day:");
           while (<MOTD>) {
             chomp;
@@ -252,7 +245,7 @@ while (kill 0 => $server_pid) {
           console_exec(tell => $want_list => "Connected players: " . join(', ', @players));
           $want_list = undef;
         }
-        open(PLAYERS, ">tztk/players.txt");
+        open(PLAYERS, ">$tztk_dir/players.txt");
         print PLAYERS map{"$_\n"} @players;
         close PLAYERS;
       # snapshot save-complete trigger
@@ -266,23 +259,46 @@ while (kill 0 => $server_pid) {
 
       #($cmd_user, $cmd_name, $cmd_args) = ($1, $3, $2) if command_allowed($3);
       if (defined $cmd_name && command_allowed($cmd_name)) {
-        if ($cmd_name eq 'create' && $cmd_args =~ /^(\d+)(?:\s*[x\*]\s*(\d+))?$/) {
-          my ($id, $count) = ($1, $2||1);
-          if (-d "$cmddir/create") {
-            if (-d "$cmddir/create/whitelist" && !-e "$cmddir/create/whitelist/$id") {
-              console_exec(tell => $cmd_user => "That material is not in the active creation whitelist.");
-              next;
-            }  elsif (-e "$cmddir/create/blacklist/$id") {
-              console_exec(tell => $cmd_user => "That material is in the creation blacklist.");
+        if ($cmd_name eq 'create' && $cmd_args =~ /^(\d+)(?:\s*\D+?\s*(\d+))?|([a-z][\w\-]*)$/) {
+          my ($id, $count, $kit) = ($1, $2||1, lc $3);
+          my @create;
+          if ($kit) {
+            if (!-e "$cmddir/create/kits/$kit") {
+              console_exec(tell => $cmd_user => "That is not a known kit.");
               next;
             }
+            open(KIT, "$cmddir/create/kits/$kit");
+            while (<KIT>) {
+              next unless /^\s*(\d+)(?:\s*\D+?\s*(\d+))?\s*$/;
+              push @create, [$1, $2||1];
+            }
+
+            if (!@create) {
+              console_exec(tell => $cmd_user => "Nothing to create!  Is the kit defined correctly?");
+              next
+            }
+          } else {
+            @create = ([$id, $count]);
           }
-          my $maxcreate = -e "$cmddir/create/max" ? cat("$cmddir/create/max") : 64;
-          $count = $maxcreate if $count > $maxcreate;
-          while ($count > 0) {
-            my $amount = $count > 64 ? 64 : $count;
-            $count -= $amount;
-            console_exec(give => $cmd_user, $id, $amount);
+
+          foreach my $create (@create) {
+            my ($id, $count) = @$create;
+            if (-d "$cmddir/create") {
+              if (-d "$cmddir/create/whitelist" && !-e "$cmddir/create/whitelist/$id") {
+                console_exec(tell => $cmd_user => "Material $id is not in the active creation whitelist.");
+                next;
+              }  elsif (-e "$cmddir/create/blacklist/$id") {
+                console_exec(tell => $cmd_user => "Material $id is in the creation blacklist.");
+                next;
+              }
+            }
+            my $maxcreate = -e "$cmddir/create/max" ? cat("$cmddir/create/max") : 64;
+            $count = $maxcreate if $count > $maxcreate;
+            while ($count > 0) {
+              my $amount = $count > 64 ? 64 : $count;
+              $count -= $amount;
+              console_exec(give => $cmd_user, $id, $amount);
+            }
           }
         } elsif ($cmd_name eq 'tp' && $cmd_args =~ /^([\w\-]+)$/) {
           my ($dest) = ($1);
@@ -308,9 +324,11 @@ while (kill 0 => $server_pid) {
           do_wpset( $cmd_user, $cmd_user );
         } elsif ($cmd_name eq 'spawn') {
           do_wp( $cmd_user, 'spawn' );
+        } elsif ($cmd_name eq 'setspawn') {
+          do_wpset( $cmd_user, 'spawn' );
         }
       }
-    } elsif ($fh == $irc->{socket}) {
+    } elsif ($irc && $fh == $irc->{socket}) {
       if (!irc_read($irc)) {
         $sel->remove($irc->{socket});
         if ($irc = irc_connect($irc)) {
@@ -322,7 +340,7 @@ while (kill 0 => $server_pid) {
 
   # snapshots
   my $snapshot_period;
-  if ($snapshot_period = cat("tztk/snapshot-period")) {
+  if ($snapshot_period = cat("$tztk_dir/snapshot-period")) {
     if ($snapshot_period =~ /^\d+$/) {
       mkdir $snapshotdir unless -d $snapshotdir;
       if (!-e "$snapshotdir/latest" || time - (stat("$snapshotdir/latest"))[9] >= $snapshot_period) {
@@ -369,7 +387,7 @@ sub snapshot_finish {
   symlink("$snapshot_name", "$snapshotdir/latest");
 
   my $snapshot_max;
-  if ($snapshot_max = cat("tztk/snapshot-max")) {
+  if ($snapshot_max = cat("$tztk_dir/snapshot-max")) {
     if ($snapshot_max =~ /^\d+$/ && $snapshot_max >= 1) {
       opendir(SNAPSHOTS, $snapshotdir);
       my @snapshots = sort grep {/^snapshot\-[\d\-]+\.tgz$/} readdir(SNAPSHOTS);
@@ -383,7 +401,7 @@ sub snapshot_finish {
 
 sub player_create {
   my $username = lc $_[0];
-  return "can't create fake player, server must set online-mode=false or provide a real user in tztk/waypoint-auth" unless %wpauth || $server_properties{online_mode} eq 'false';
+  return "can't create fake player, server must set online-mode=false or provide a real user in $tztk_dir/waypoint-auth" unless %wpauth || $server_properties{online_mode} eq 'false';
   return "invalid name" unless $username =~ /^[\w\-]+$/;
 
   my $player = IO::Socket::INET->new(
@@ -454,7 +472,7 @@ sub mcauth_joinserver {
   return http('www.minecraft.net', '/game/joinserver.jsp?user='.urlenc($_[0]).'&sessionId='.urlenc($_[1]).'&serverId='.urlenc($_[2]));
 }
 
-sub command_allowed { -e "tztk/commands/$_[0]" }
+sub command_allowed { -e "$tztk_dir/allowed-commands/$_[0]" }
 
 sub console_exec {
   print MCIN join(" ", @_) . "\n";
@@ -576,19 +594,20 @@ sub http {
   return join("\n", <$http>);
 }
 
-sub short_time {
-  my ( $sec ) = @_;
-  if ( $sec >= 172800 ) {  # >= 2 days or 48 hours
-    return int( $sec / 60 / 60 / 24 ) . " days";
-  } elsif ( $sec >= 3600 and $sec < 172800) {  # >= 1 hour
-    return int( $sec  / 60 / 60 ) . " hour(s)";
-  } else {
-    return int( $sec / 60 ) . " minutes";
-  }
-}
 
 sub show_uptime {
   console_exec( say => ":: Uptime: " . short_time( time() - $uptime ) );
+}
+
+sub short_time {
+  my ( $sec ) = @_;
+  if ( $sec >= 172800 ) { # >= 2 days or 48 hours
+    return int( $sec / 60 / 60 / 24 ) . " days";
+  } elsif ( $sec >= 3600 and $sec < 172800) { # >= 1 hour
+    return int( $sec / 60 / 60 ) . " hour(s)";
+  } else {
+    return int( $sec / 60 ) . " minutes";
+  }
 }
 
 sub show_help {
@@ -655,4 +674,5 @@ sub do_wpset {
   player_destroy($wp_player);
   player_copy($wpauth{username}, $waypoint) if %wpauth;
 }
+
 
