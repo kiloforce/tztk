@@ -10,8 +10,11 @@ use IO::Handle;
 use IO::Socket;
 use File::Copy;
 use POSIX qw(strftime);
+use IO::Uncompress::Gunzip qw(gunzip);
+use IO::Compress::Gzip qw(gzip);
+use LWP::UserAgent;
 
-my $protocol_version = 8;
+my $protocol_version = 9;
 my $client_version = 99;
 my $server_memory = "1024M";
 
@@ -60,7 +63,9 @@ my $tztk_dir = cat("tztk-dir") || "tztk";
 my $cmddir = "$tztk_dir/allowed-commands";
 my $snapshotdir = "$tztk_dir/snapshots";
 my %msgcolor = (info => 36, warning => 33, error => 31, tztk => 32, chat => 35);
+
 $|=1;
+my $ua = new LWP::UserAgent; $ua->agent("tztk");
 
 # server uptime
 my $uptime = time();
@@ -104,8 +109,8 @@ print color(tztk => "Minecraft server appears to be at $server_properties{server
 # load waypoint authentication
 my %wpauth;
 if (-d "$tztk_dir/waypoint-auth") {
-  $wpauth{username} = cat('$tztk_dir/waypoint-auth/username');
-  $wpauth{password} = cat('$tztk_dir/waypoint-auth/password');
+  $wpauth{username} = cat("$tztk_dir/waypoint-auth/username");
+  $wpauth{password} = cat("$tztk_dir/waypoint-auth/password");
   my $sessiondata = mcauth_startsession($wpauth{username}, $wpauth{password});
 
   if (!ref $sessiondata) {
@@ -134,9 +139,8 @@ $SIG{PIPE} = sub { print color(error => "SIGPIPE (\$?=$?, k0=".(kill 0 => $serve
 $server_pid = open2(\*MCOUT, \*MCIN, "java -Xmx$server_memory -Xms$server_memory -jar minecraft_server.jar nogui 2>&1");
 print "Minecraft SMP Server launched with pid $server_pid\n";
 
-my @players;
+my (@players, %payments_pending, $want_list);
 my $server_ready = 0;
-my $want_list;
 my $want_snapshot = 0;
 
 my $sel = new IO::Select(\*MCOUT, \*STDIN);
@@ -176,7 +180,7 @@ while (kill 0 => $server_pid) {
 
       # init messages
       # Done! For help, type "help" or "?"
-      if ($mc =~ /^Done\!\s*For\s+help\,\s*type\b/) {
+      if ($mc =~ /^Done(?:\s*\(\w+\))?\!\s*For\s+help\,\s*type\b/) {
         $server_ready = 1;
         console_exec('list');
       # chat messages
@@ -231,6 +235,45 @@ while (kill 0 => $server_pid) {
       } elsif ($mc =~ /^([\w\-]+)\s+lost\s+connection\:\s*(.+?)\s*$/) {
         my ($username, $reason) = ($1, $2);
         irc_send($irc, "$username has disconnected: $reason") if $irc && player_is_human($username);
+        if (exists $payments_pending{$username}) {
+          my $bank_dir = "$server_properties{level_name}/players/tztk";
+          mkdir $bank_dir unless -d $bank_dir;
+          $bank_dir .= "/bank";
+          mkdir $bank_dir unless -d $bank_dir;
+          $bank_dir .= "/$username";
+          mkdir $bank_dir unless -d $bank_dir;
+
+          my $mtime = 0;
+          for (1..3) {
+            sleep 1;
+            $mtime = (stat("$server_properties{level_name}/players/$username.dat"))[9];
+            last if time - $mtime < 3;
+          }
+          next unless time - $mtime < 3;
+          my $player_nbt = read_player($username);
+          next unless $player_nbt;
+          my $modified_player = 0;
+          foreach my $payment (@{$payments_pending{$username}}) {
+            my %cost;
+            my $cost_dir = "$tztk_dir/payment/$payment->{item}/cost";
+            opendir(CDIR, $cost_dir);
+            $cost{$_} = $payment->{amount} * cat("$cost_dir/$_") foreach grep {!/^\./} readdir CDIR;
+            closedir CDIR;
+
+            if (take_items($player_nbt, \%cost)) {
+              my $payment_file = "$bank_dir/$payment->{item}";
+              my $balance = cat($payment_file) || 0;
+              $balance += $payment->{amount};
+              open(BANKFILE, ">$payment_file");
+              print BANKFILE $balance;
+              close BANKFILE;
+              $modified_player = 1;
+            }
+          }
+
+          write_player($player_nbt, $username) if $modified_player;
+          delete $payments_pending{$username};
+        }
         console_exec('list');
       # player counts
       # Player count: 0
@@ -257,8 +300,23 @@ while (kill 0 => $server_pid) {
         }
       }
 
-      #($cmd_user, $cmd_name, $cmd_args) = ($1, $3, $2) if command_allowed($3);
       if (defined $cmd_name && command_allowed($cmd_name)) {
+        if (-e "$tztk_dir/payment/$cmd_name/cost") {
+          my $bank_file = "$server_properties{level_name}/players/tztk/bank/$cmd_user/$cmd_name";
+          my $paid = cat($bank_file);
+          if (!$paid) {
+            console_exec(tell => $cmd_user => "You must pay to use -$cmd_name!  (Try -buy-list to see what.)");
+            next;
+          }
+
+          $paid--;
+          open(BANKFILE, ">$bank_file");
+          print BANKFILE $paid;
+          close BANKFILE;
+
+          console_exec(tell => $cmd_user => "You have $paid more use".($paid==1 ? "" : "s")." of -$cmd_name remaining.");
+        }
+
         if ($cmd_name eq 'create' && $cmd_args =~ /^(\d+)(?:\s*\D+?\s*(\d+))?|([a-z][\w\-]*)$/) {
           my ($id, $count, $kit) = ($1, $2||1, lc $3);
           my @create;
@@ -326,6 +384,51 @@ while (kill 0 => $server_pid) {
           do_wp( $cmd_user, 'spawn' );
         } elsif ($cmd_name eq 'setspawn') {
           do_wpset( $cmd_user, 'spawn' );
+        } elsif ($cmd_name eq 'buy' && $cmd_args =~ /^([\w\-]+)(?:\s+(\d+))$/) {
+          my ($item, $amount) = ($1, $2||1);
+          if (!-d "$tztk_dir/payment/$item/cost") {
+            console_exec(tell => $cmd_user => "That item is not for sale!");
+            next;
+          } else {
+            push @{$payments_pending{$cmd_user}}, {
+              item => $item,
+              amount => $amount,
+            };
+            console_exec(tell => $cmd_user => "You will buy $amount $item using items in your inventory the next time you log out.");
+          }
+        } elsif ($cmd_name eq 'bank-list') {
+          my $bank_dir = "$server_properties{level_name}/players/tztk/bank/$cmd_user";
+          if (!-d $bank_dir) {
+            console_exec(tell => $cmd_user => "You don't even have a bank!");
+            next;
+          }
+
+          my %bank;
+          opendir(BANKDIR, $bank_dir);
+          $bank{$_} = cat("$bank_dir/$_") foreach grep {!/^\./} readdir BANKDIR;
+          closedir BANKDIR;
+
+          delete $bank{$_} foreach grep {!$bank{$_}} keys %bank;
+
+          if (!%bank) {
+            console_exec(tell => $cmd_user => "Your bank is empty.");
+            next;
+          }
+
+          console_exec(tell => $cmd_user => "Your bank: " . join(", ", map {"$_($bank{$_})"} sort keys %bank));
+        } elsif ($cmd_name eq 'buy-list') {
+          my $pay_dir = "$tztk_dir/payment";
+          my %cost;
+          opendir(PDIR, $pay_dir);
+          foreach my $item (grep {!/^\./} readdir(PDIR)) {
+            my $cost_dir = "$pay_dir/$item/cost";
+            opendir(CDIR, $cost_dir);
+            $cost{$item}{$_} = cat("$cost_dir/$_") foreach grep {!/^\./} readdir CDIR;
+            closedir CDIR;
+          }
+          closedir(PDIR);
+
+          console_exec(tell => $cmd_user => join("; ", map {my $item = $_; "$item(" . join(", ", map {"$_($cost{$item}{$_})"} sort{$a<=>$b}keys %{$cost{$item}}) . ")"} sort keys %cost));
         }
       }
     } elsif ($irc && $fh == $irc->{socket}) {
@@ -425,16 +528,16 @@ sub player_create {
   }
 
   syswrite($player, $packet{cs_login}($username, ""));
-  select undef, undef, undef, .2;
+  select undef, undef, undef, .5;
   syswrite($player, $packet{cs_keepalive}());
   return $player;
 }
 
 sub player_destroy {
   syswrite($_[0], $packet{cs_keepalive}());
-  select undef, undef, undef, .8;
+  select undef, undef, undef, 1;
   syswrite($_[0], $packet{cs_disconnect}($_[0]||""));
-  select undef, undef, undef, .8;
+  select undef, undef, undef, 1;
   close $_[0];
 }
 
@@ -577,21 +680,192 @@ sub urlenc {
 sub http {
   my ($host, $path, $post) = @_;
 
-  my $http = IO::Socket::INET->new(
-    Proto     => "tcp",
-    PeerAddr  => $host,
-    PeerPort  => 80,
-  ) or die "can't connect to $host for http: $!";
+  my $req;
 
-  print $http +(defined $post ? "POST" : "GET")." $path HTTP/1.0\r\nHost: $host\r\n";
   if (defined $post) {
-    print $http "Content-Length: ".length($post)."\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n$post";
+    $req = HTTP::Request->new(POST => "http://$host$path");
+    $req->content_type('application/x-www-form-urlencoded');
+    $req->content($post);
   } else {
-    print $http "\r\n";
+    $req = HTTP::Request->new(GET => "http://$host$path");
   }
 
-  while (<$http> =~ /\S/) {}
-  return join("\n", <$http>);
+  my $res = $ua->request($req);
+  return $res->is_success ? $res->decoded_content : "";
+}
+
+sub read_player {
+  my ($player) = @_;
+  my $file = "$server_properties{level_name}/players/$player.dat";
+  return -e $file ? read_nbt($file) : undef;
+}
+
+sub write_player {
+  my ($nbt, $player) = @_;
+  my $file = "$server_properties{level_name}/players/$player.dat";
+
+  if (-e $file) {
+    my $dir = "$server_properties{level_name}/players/tztk";
+    mkdir $dir unless -d $dir;
+    $dir .= "/backups";
+    mkdir $dir unless -d $dir;
+    my $timestamp = strftime('%Y-%m-%d-%H-%M-%S', localtime);
+    rename $file, "$dir/$player-$timestamp";
+  }
+
+  write_nbt($nbt, $file);
+}
+
+sub read_nbt {
+  my ($filename) = @_;
+
+  my $input;
+  gunzip($filename => \$input);
+  my ($name, $nbt) = read_named_tag({d=>$input,c=>0});
+  return ref $nbt ? $nbt : undef;
+}
+
+sub write_nbt {
+  my ($nbt, $filename) = @_;
+
+  my $output;
+  write_named_tag(\$output, "", $nbt);
+  gzip(\$output => $filename);
+}
+
+sub read_named_tag {
+  my $fh = shift;
+
+  xsysread($fh, my $t, 1);
+  $t = ord $t;
+  return undef unless $t;
+  my $n = read_tag_payload($fh, 8);
+  my $e = {type=>$t, payload=>read_tag_payload($fh, $t)};
+  return ($n, $e);
+}
+
+sub read_tag_payload {
+  my ($fh, $type) = @_;
+
+  my ($v, $l, $t);
+
+  if ($type == 1) { #byte
+    xsysread($fh, $v, 1);
+    return unpack("c",$v);
+  } elsif ($type == 2) { #short
+    xsysread($fh, $v, 2);
+    return unpack("s", pack("S", unpack("n", $v)));
+  } elsif ($type == 3) { #int
+    xsysread($fh, $v, 4);
+    return unpack("l", pack("L", unpack("N", $v)));
+  } elsif ($type == 4) { #long
+    xsysread($fh, $v, 8);
+  } elsif ($type == 5) { #float
+    xsysread($fh, $v, 4);
+    return unpack("f", pack("L", unpack("N", $v)));
+  } elsif ($type == 6) { #double
+    xsysread($fh, $v, 8);
+  } elsif ($type == 7) { #byte_array
+    my $l = read_tag_payload($fh, 3);
+    xsysread($fh, $v, $l);
+  } elsif ($type == 8) { #string
+    $l = read_tag_payload($fh, 2);
+    xsysread($fh, $v, $l);
+  } elsif ($type == 9) { #list
+    $t = read_tag_payload($fh, 1);
+    $l = read_tag_payload($fh, 3);
+    $v = {listtype=>$t, listdata=>[]};
+    if ($l) {
+      push @{$v->{listdata}}, read_tag_payload($fh, $t) for 1..$l;
+    }
+  } elsif ($type == 10) { #compound
+    $v = {};
+    while (1) {
+      my ($k, $e) = read_named_tag($fh);
+      last unless defined $k;
+      $v->{$k} = $e;
+    }
+  }
+  return $v;
+}
+
+sub xsysread {
+  $_[1] = substr($_[0]{d}, $_[0]{c}, $_[2]);
+  $_[0]{c} += $_[2];
+}
+
+sub write_named_tag {
+  my ($fh, $name, $obj) = @_;
+
+  xsyswrite($fh, chr($obj->{type}));
+  write_tag_payload($fh, 8, $name);
+  write_tag_payload($fh, $obj->{type}, $obj->{payload});
+}
+
+sub write_tag_payload {
+  my ($fh, $type, $payload) = @_;
+
+  if ($type == 0) { #end
+    xsyswrite($fh, pack("c", 0));
+  } elsif ($type == 1) { #byte
+    xsyswrite($fh, pack("c", $payload));
+  } elsif ($type == 2) { #short
+    xsyswrite($fh, pack("n", unpack("S", pack("s", $payload))));
+  } elsif ($type == 3) { #int
+    xsyswrite($fh, pack("N", unpack("L", pack("l", $payload))));
+  } elsif ($type == 4) { #long
+    xsyswrite($fh, $payload);
+  } elsif ($type == 5) { #float
+    xsyswrite($fh, pack("N", unpack("L", pack("f", $payload))));
+  } elsif ($type == 6) { #double
+    xsyswrite($fh, $payload);
+  } elsif ($type == 7) { #byte_array
+    write_tag_payload($fh, 3, length($payload));
+    xsyswrite($fh, $payload);
+  } elsif ($type == 8) { #string
+    write_tag_payload($fh, 2, length($payload));
+    xsyswrite($fh, $payload);
+  } elsif ($type == 9) { #list
+    write_tag_payload($fh, 1, $payload->{listtype});
+    write_tag_payload($fh, 3, scalar(@{$payload->{listdata}}));
+    foreach my $listdata (@{$payload->{listdata}}) {
+      write_tag_payload($fh, $payload->{listtype}, $listdata);
+    }
+  } elsif ($type == 10) { #compound
+    foreach my $name (keys %$payload) {
+      write_named_tag($fh, $name, $payload->{$name});
+    }
+    write_tag_payload($fh, 0);
+  }
+}
+
+sub xsyswrite {
+  ${$_[0]} .= $_[1];
+}
+
+sub take_items {
+  my $nbt = shift;
+  my %cost = %{shift()};
+
+  my %inv_count;
+
+  foreach my $inv (@{$nbt->{payload}{Inventory}{payload}{listdata}}) {
+    $inv_count{$inv->{id}{payload}} += $inv->{Count}{payload};
+  }
+
+  foreach my $id (keys %cost) {
+    return 0 unless $inv_count{$id} >= $cost{$id};
+  }
+
+  my $listdata = $nbt->{payload}{Inventory}{payload}{listdata};
+  for (my $i=$#$listdata; $i>=0; $i--) {
+    next unless $cost{$listdata->[$i]{id}{payload}};
+    $listdata->[$i]{Count}{payload} -= $cost{$listdata->[$i]{id}{payload}};
+    $cost{$listdata->[$i]{id}{payload}} = $listdata->[$i]{Count}{payload} < 0 ? -$listdata->[$i]{Count}{payload} : 0;
+    delete $listdata->[$i] if $listdata->[$i]{Count}{payload} < 1;
+  }
+
+  return 1;
 }
 
 
