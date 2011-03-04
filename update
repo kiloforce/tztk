@@ -1,0 +1,43 @@
+#!/bin/sh
+
+if [ "$1" = "commit" ] ; then
+  wget -q http://minecraft.net/download/minecraft_server.jar -O minecraft_server.jar.new
+  mv minecraft_server.jar.new minecraft_server.jar
+  echo "New minecraft installed.  Restart server"
+  echo
+  exit 0
+fi
+
+echo -n "Minecraft Server: "
+A=`cat minecraft_server.jar | md5sum`
+wget -q http://minecraft.net/download/minecraft_server.jar -O minecraft_server.jar.new
+B=`cat minecraft_server.jar.new | md5sum`
+S=`cat minecraft_server.jar.new | wc -c`
+if [ $S -lt 1000 ] ; then
+  echo "ERROR DOWNLOADING NEW VERSION!"
+  exit 1
+fi
+
+if [ "$A" != "$B" -a $S -gt 1000 ] ; then
+  echo "NEW VERSION FOUND!"
+  echo
+  echo "use 'commit' to install new version"
+else
+  echo "No change."
+fi
+
+
+echo -n "Topaz Toolkit: "
+A=`md5sum topaz-minecraft-smp-toolkit.tgz`
+wget -q http://minecraft.topazstorm.com/topaz-minecraft-smp-toolkit.tgz -O topaz-minecraft-smp-toolkit.tgz
+B=`md5sum topaz-minecraft-smp-toolkit.tgz`
+if [ "$A" != "$B"  ] ; then
+  echo "NEW VERSION FOUND!"
+  echo
+  echo "use 'tar' to install new version"
+else
+  echo "No change."
+fi
+
+echo
+
