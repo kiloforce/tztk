@@ -22,6 +22,7 @@ if [ "$A" != "$B" -a $S -gt 1000 ] ; then
   echo "NEW VERSION FOUND!"
   echo
   echo "use 'commit' to install new version"
+  echo ""
 else
   echo "No change."
 fi

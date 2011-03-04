@@ -12,7 +12,7 @@ use File::Copy;
 use POSIX qw(strftime);
 
 my $protocol_version = 9;
-my $client_version = 11;
+my $client_version = 99;
 my $server_memory = "2024M";
 
 
