@@ -1,9 +1,10 @@
 Fork from Minecraft Topaz SMP Toolkit - http://minecraft.topazstorm.com/
 
 Features:
-* add 'spawn' command - way point set to spawn location
-* add 'home' command - give each player personal home way point
-* add 'tp off' command - give players option to disallow tp to them
-* add 'last' command - show last time players logged in and total time played
-* add 'help' command - show help with list of commands
+* add '-spawn' and '-setspawn' commands - way point set to spawn location
+* add '-home' and '-sethome' commands - give each player personal home way point
+* add '-tp-off' and '-tp-on' commands - give players option to disallow tp to them
+* add '-last' command - show last time players logged in and total time played
+* add '-uptime' command - show uptime for Minecraft server
+* add '-help' command - show help with list of commands
 
